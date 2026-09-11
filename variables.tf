@@ -182,6 +182,30 @@ variable "chunk_overlap_percentage" {
   default     = 20
 }
 
+variable "enable_site_sync" {
+  description = "Mirror the site's published WordPress pages and posts into the knowledge base once a day, so the assistant answers from the website as well as uploaded documents."
+  type        = bool
+  default     = true
+}
+
+variable "site_sync_post_types" {
+  description = "WordPress REST collections to mirror. Add \"product\" for WooCommerce products."
+  type        = list(string)
+  default     = ["pages", "posts"]
+}
+
+variable "site_sync_schedule" {
+  description = "When the daily sync runs (EventBridge Scheduler expression)."
+  type        = string
+  default     = "cron(0 3 * * ? *)"
+}
+
+variable "site_sync_timezone" {
+  description = "Time zone for site_sync_schedule."
+  type        = string
+  default     = "America/Chicago"
+}
+
 ########################################
 # Chatbot
 ########################################

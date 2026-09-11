@@ -35,7 +35,7 @@ output "lightsail_instance_name" {
 }
 
 output "kb_docs_bucket" {
-  description = "Upload knowledge-base documents here (PDF, DOCX, HTML, MD, TXT, CSV). Ingestion starts automatically."
+  description = "Upload knowledge-base documents under docs/ in this bucket (scripts/upload-docs.sh does it). Ingestion starts automatically. site/ is managed by the site sync."
   value       = module.kb.docs_bucket
 }
 
@@ -71,4 +71,9 @@ output "region" {
 
 output "aws_profile" {
   value = var.aws_profile
+}
+
+output "site_sync_function" {
+  description = "Run the site sync now: aws lambda invoke --function-name <this> /dev/stdout"
+  value       = var.enable_site_sync ? module.site_sync[0].function_name : null
 }

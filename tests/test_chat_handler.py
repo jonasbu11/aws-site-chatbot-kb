@@ -155,6 +155,29 @@ class ChatHandlerTests(unittest.TestCase):
         self.assertEqual(call["messages"][-1]["content"][0]["text"], "When are you open?")
         self.assertEqual(call["guardrailConfig"]["guardrailIdentifier"], "gr-1")
 
+    def test_site_page_metadata_gives_title_and_link(self):
+        agent = FakeAgentRuntime()
+        agent.retrieve = lambda **kw: {
+            "retrievalResults": [
+                {
+                    "content": {"text": "Emergency calls 24/7."},
+                    "location": {"s3Location": {"uri": "s3://bucket/site/page-12.md"}},
+                    "metadata": {"title": "Heating / Cooling", "url": "https://acme.example/heating-cooling/"},
+                    "score": 0.9,
+                },
+                {
+                    "content": {"text": "x"},
+                    "location": {"s3Location": {"uri": "s3://bucket/site/page-13.md"}},
+                    "metadata": {"title": "Bad link", "url": "javascript:alert(1)"},
+                    "score": 0.5,
+                },
+            ]
+        }
+        h, _, _ = load_handler(BASE_ENV, runtime=FakeRuntime(answer="Yes, 24/7 [1] and more [2]."), agent=agent)
+        body = json.loads(h.lambda_handler(event({"message": "emergency?"}), None)["body"])
+        self.assertEqual(body["sources"][0], {"n": 1, "title": "Heating / Cooling", "url": "https://acme.example/heating-cooling/"})
+        self.assertEqual(body["sources"][1]["url"], "")
+
     def test_falls_back_on_throttle(self):
         h, rt, _ = load_handler(BASE_ENV, runtime=FakeRuntime(fail_codes={"primary-model": "ThrottlingException"}))
         resp = h.lambda_handler(event({"message": "hi"}), None)

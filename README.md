@@ -30,6 +30,7 @@ visitor ──HTTPS──▶ CloudFront (ACM cert, WAF, security headers)
 | Origin lock | Random secret sent by CloudFront as `X-Origin-Verify`; Apache `Require expr` on the instance, header check in the Lambda | Nothing can reach WordPress or the chat API around CloudFront/WAF, even though the Lightsail IP is public. |
 | Origin TLS | Let's Encrypt cert on `origin.<domain>` obtained by the instance at first boot, CloudFront `https-only` origin | Admin logins don't cross the CloudFront-to-origin hop in plaintext. `origin_tls = false` falls back to HTTP with the same header lock. |
 | KB | S3 docs bucket (versioned, private), S3 Vectors bucket + index, Bedrock KB (Titan V2 embeddings), S3 data source, kb-sync Lambda | S3 Vectors is the cheapest vector store AWS sells ($0.06/GB-mo, no idle compute). Uploads trigger ingestion automatically. |
+| Site sync | Lambda + EventBridge Scheduler, daily | Mirrors published WordPress pages and posts into the knowledge base, so the assistant answers from the website itself as well as uploaded documents. |
 | Chat | Lambda (Python 3.13, arm64), HTTP API with throttling, optional Guardrail, optional DynamoDB log | `Retrieve` + `Converse` instead of `RetrieveAndGenerate` so OpenAI models on Bedrock work too. Primary model with automatic fallback. |
 | Cost guard | AWS Budget with 80% actual / 100% forecast alerts | Cheap insurance. |
 
@@ -44,7 +45,7 @@ Prices verified on aws.amazon.com 2026-09-11.
 | Route 53 hosted zone | $0.50 |
 | CloudFront | $0 within always-free 1 TB / 10M requests |
 | WAF web ACL + 4 managed groups + 3 rules | ~$8 (set `enable_waf = false` to drop it) |
-| API Gateway + Lambda | $0 at small-business volumes (Lambda always-free tier) |
+| API Gateway + Lambda + daily scheduler | $0 at small-business volumes (Lambda always-free tier) |
 | S3 Vectors | cents (storage $0.06/GB, queries $2.50/M) |
 | S3 docs + widget buckets | cents |
 | Bedrock embeddings (Titan V2) | $0.02 per 1M tokens, effectively $0 |
@@ -77,8 +78,8 @@ Terraform:
   need a one-time use-case form per AWS account before the first call. Submitted from the management
   account of an AWS Organization through the API, it covers every member account, so a build account
   under one org never sees it again.
-- **Knowledge-base documents.** `scripts/upload-docs.sh` loads whatever the client provides; that belongs
-  in the client hours, not the build.
+- **Knowledge-base documents** beyond the website (price sheets, policies, manuals). The website itself is
+  picked up nightly with no action; extra documents go in with `scripts/upload-docs.sh` during client hours.
 
 ## Deploy
 
@@ -112,9 +113,17 @@ to get the name servers, repoint, then apply everything).
    plugin cleanup can't remove the assistant by accident. To turn it off, add
    `define('SITE_CHAT_DISABLED', true);` to `wp-config.php`. Title, greeting, color and side come from
    the `widget` variable; change them and `terraform apply` (about a minute, no WordPress change).
-5. **Knowledge base**: `scripts/upload-docs.sh ./docs` syncs a folder to the docs bucket; ingestion starts
-   automatically. `scripts/kb-status.sh` shows recent jobs, `scripts/kb-status.sh --sync` forces one.
-   Supported: PDF, DOCX, HTML, Markdown, TXT, CSV, XLSX (Bedrock parses them; max 50 MB per file).
+5. **Knowledge base**: two sources feed it, both automatic.
+   - **The website.** Every night (3:00 America/Chicago by default) the site sync reads published pages and
+     posts through the WordPress REST API, stores each as a clean Markdown copy with its title and URL,
+     removes anything unpublished, and re-indexes only if something changed. Answers cite the page and
+     link to it. Run it on demand after a round of edits with
+     `aws lambda invoke --function-name $(terraform output -raw site_sync_function) /dev/stdout`.
+     WordPress's sample post and page are deleted at first boot so the assistant never learns them.
+   - **Documents.** `scripts/upload-docs.sh ./docs` syncs a folder to `docs/` in the bucket; ingestion
+     starts automatically. `scripts/kb-status.sh` shows recent jobs, `scripts/kb-status.sh --sync` forces
+     one. Supported: PDF, DOCX, HTML, Markdown, TXT, CSV, XLSX (max 50 MB per file). Don't write under
+     `site/`; the sync owns it and deletes anything it didn't put there.
 6. **Test**: `scripts/chat.sh "What are your hours?"`.
 
 ## Choosing models
@@ -158,6 +167,14 @@ and Lambda are outside one), no secrets rotation for the origin header (rotate w
 
 ## Operating notes
 
+- **Site sync scope**: pages and posts by default; set `site_sync_post_types = ["pages", "posts", "product"]`
+  for WooCommerce. It reads the REST API through CloudFront's own hostname, so it works before the client's
+  DNS is cut over. Security plugins that switch off the public REST API break it (the Lambda log shows the
+  HTTP error). Page builders that render content only in the browser won't be captured, since the sync reads
+  what WordPress stores. `enable_site_sync = false` removes it. The Bedrock-managed web crawler was not used:
+  it only works with OpenSearch Serverless, which costs more than this entire stack, and it would index
+  every page's menus and footer.
+
 - **Snapshots**: daily Lightsail auto-snapshots at `lightsail_snapshot_time` UTC, seven retained.
 - **Page cache**: CloudFront caches anonymous page HTML for `page_cache_default_ttl` seconds (300).
   Cookies are not in the cache key, so visitors carrying only analytics or consent cookies share cached
@@ -185,16 +202,19 @@ modules/site-lightsail/               instance, static IP, firewall, first-boot 
 modules/edge/                         Route 53, ACM, CloudFront, WAF, widget bucket, widget/widget.js.tftpl
 modules/kb/                           docs bucket, S3 Vectors, Bedrock KB + data source, kb-sync Lambda
 modules/chatbot/                      Guardrail, chat Lambda (lambda/handler.py), HTTP API, optional DynamoDB
+modules/site-sync/                    nightly WordPress -> knowledge base mirror (lambda/handler.py), EventBridge schedule
 scripts/                              upload-docs.sh, kb-status.sh, chat.sh
-tests/                                chat handler (python3 -m unittest tests/test_chat_handler.py), cache-key function (node tests/test_wp_cache_key.js)
+tests/                                python3 -m unittest tests/test_chat_handler.py tests/test_site_sync.py; node tests/test_wp_cache_key.js
 ```
 
 ## Verification status
 
 - `terraform validate` and `terraform fmt -check`: clean (Terraform 1.16.1, AWS provider 6.x).
 - `terraform plan` against a live account: 60 resources, no errors.
-- Chat handler: 9 unit tests pass (auth header, validation, retrieval + citation, fallback, history hygiene).
+- Chat handler: 10 unit tests pass (auth header, validation, retrieval + citation with page links, fallback, history hygiene).
 - Cache-key function: 6 unit tests pass (`node tests/test_wp_cache_key.js`).
+- Site sync: 5 tests against a local fake WordPress REST API and in-memory S3 (pagination, Markdown
+  conversion, change detection, deletions, protected posts, busy-ingestion retry and catch-up).
 - Instance bootstrap: rendered template passes `bash -n` for both the outer and inner script. The origin-lock
   `Require expr` and the conditional `no-cache="Set-Cookie"` rule were exercised on a local Apache 2.4
   (403 without the header, Cache-Control added only when a response sets a cookie).

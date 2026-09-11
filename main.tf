@@ -120,6 +120,28 @@ module "edge" {
 }
 
 ########################################
+# Site sync: the assistant learns the site's own pages
+########################################
+
+module "site_sync" {
+  source = "./modules/site-sync"
+  count  = var.enable_site_sync ? 1 : 0
+
+  name = var.name
+  # The CloudFront hostname works before the client's DNS is cut over.
+  site_base_url       = "https://${module.edge.cloudfront_domain_name}"
+  site_public_url     = "https://${var.domain_name}"
+  docs_bucket         = module.kb.docs_bucket
+  docs_bucket_arn     = module.kb.docs_bucket_arn
+  knowledge_base_id   = module.kb.knowledge_base_id
+  knowledge_base_arn  = module.kb.knowledge_base_arn
+  data_source_id      = module.kb.data_source_id
+  post_types          = var.site_sync_post_types
+  schedule_expression = var.site_sync_schedule
+  schedule_timezone   = var.site_sync_timezone
+}
+
+########################################
 # Cost guardrail
 ########################################
 

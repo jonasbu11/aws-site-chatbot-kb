@@ -309,6 +309,9 @@ resource "aws_s3_bucket_notification" "docs" {
   lambda_function {
     lambda_function_arn = aws_lambda_function.sync.arn
     events              = ["s3:ObjectCreated:*", "s3:ObjectRemoved:*"]
+    # Uploaded documents live under docs/. The site sync writes under site/
+    # and starts its own ingestion job once per run.
+    filter_prefix = "docs/"
   }
 
   depends_on = [aws_lambda_permission.sync_from_s3]

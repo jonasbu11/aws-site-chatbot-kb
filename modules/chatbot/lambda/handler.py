@@ -164,12 +164,16 @@ def _retrieve(query: str) -> list[dict[str, Any]]:
         loc = r.get("location") or {}
         uri = (loc.get("s3Location") or {}).get("uri") or (loc.get("webLocation") or {}).get("url") or ""
         meta = r.get("metadata") or {}
-        title = meta.get("title") or meta.get("x-amz-bedrock-kb-source-uri") or uri
+        # Site-sync pages carry their real title and public URL as metadata;
+        # uploaded documents fall back to a cleaned-up file name.
+        title = str(meta.get("title") or "").strip() or _display_title(uri)
+        url = str(meta.get("url") or "").strip()
         passages.append(
             {
                 "text": text.strip(),
                 "uri": uri,
-                "title": _display_title(title),
+                "title": title,
+                "url": url if url.startswith("https://") else "",
                 "score": round(float(r.get("score") or 0.0), 4),
             }
         )
@@ -315,7 +319,7 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         if 1 <= n <= len(passages) and n not in seen:
             seen.append(n)
     sources = [
-        {"n": n, "title": passages[n - 1]["title"], "uri": passages[n - 1]["uri"]}
+        {"n": n, "title": passages[n - 1]["title"], "url": passages[n - 1]["url"]}
         for n in seen
     ]
 

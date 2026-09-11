@@ -133,6 +133,12 @@ if [ -n "$WP_LOAD" ]; then
     wpcli option update blogname "$BUSINESS_NAME" >/dev/null && log "site title set"
     wpcli option update admin_email "$WP_ADMIN_EMAIL" >/dev/null
     wpcli rewrite structure '/%postname%/' --hard >/dev/null && log "permalinks set"
+    # Remove WordPress sample content so the assistant never learns it.
+    for slug in hello-world sample-page; do
+      for id in $(wpcli post list --post_type=post,page --name="$slug" --field=ID 2>/dev/null); do
+        wpcli post delete "$id" --force >/dev/null && log "removed sample content $slug"
+      done
+    done
   else
     log "WP-CLI unavailable or WordPress not installed; skipped account and title setup"
   fi
