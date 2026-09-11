@@ -197,16 +197,17 @@ resource "aws_s3_object" "widget_js" {
 # Cache policies
 ########################################
 
-# Anonymous page HTML cached briefly. All cookies are part of the cache key:
-# WordPress auth cookies carry a hash suffix (wordpress_logged_in_<hash>) and
-# cache policies cannot wildcard names, so "all" is the only setting that
-# guarantees a logged-in user never receives, or seeds, an anonymous page.
-# Visitors with no cookies share cached pages; everyone else goes to origin.
+# Anonymous page HTML cached briefly. Cookies are NOT in the cache key, so
+# visitors with only analytics/consent cookies share cached pages (cookies are
+# still forwarded to WordPress by the origin request policy). The
+# wp_cache_key function marks requests carrying a WordPress session cookie
+# with a random x-wp-nocache header, which is in the key, so logged-in,
+# cart and password-post requests always miss and are never shared.
 resource "aws_cloudfront_cache_policy" "wp_pages" {
   count = var.page_cache_default_ttl > 0 ? 1 : 0
 
   name        = "${var.name}-wp-pages"
-  comment     = "WordPress pages: short TTL, all cookies in key"
+  comment     = "WordPress pages: short TTL, session requests bypass via x-wp-nocache"
   default_ttl = var.page_cache_default_ttl
   min_ttl     = 0
   max_ttl     = 86400
@@ -216,15 +217,28 @@ resource "aws_cloudfront_cache_policy" "wp_pages" {
     enable_accept_encoding_brotli = true
 
     cookies_config {
-      cookie_behavior = "all"
+      cookie_behavior = "none"
     }
     headers_config {
-      header_behavior = "none"
+      header_behavior = "whitelist"
+      headers {
+        items = ["x-wp-nocache"]
+      }
     }
     query_strings_config {
       query_string_behavior = "all"
     }
   }
+}
+
+resource "aws_cloudfront_function" "wp_cache_key" {
+  count = var.page_cache_default_ttl > 0 ? 1 : 0
+
+  name    = "${var.name}-wp-cache-key"
+  runtime = "cloudfront-js-2.0"
+  comment = "Bypass the page cache for requests carrying a WordPress session cookie"
+  publish = true
+  code    = file("${path.module}/functions/wp-cache-key.js")
 }
 
 resource "aws_cloudfront_cache_policy" "wp_static" {
@@ -673,6 +687,14 @@ resource "aws_cloudfront_distribution" "this" {
     cache_policy_id            = local.page_cache_policy_id
     origin_request_policy_id   = local.orp_all_viewer
     response_headers_policy_id = local.rhp_security_headers
+
+    dynamic "function_association" {
+      for_each = var.page_cache_default_ttl > 0 ? [1] : []
+      content {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.wp_cache_key[0].arn
+      }
+    }
   }
 
   restrictions {

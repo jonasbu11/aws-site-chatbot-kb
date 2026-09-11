@@ -57,6 +57,10 @@ RemoteIPHeader X-Forwarded-For
 <Location "/.well-known/acme-challenge/">
     Require all granted
 </Location>
+# CloudFront caches Set-Cookie with the object and replays it on every hit.
+# A plugin that sets a cookie on an anonymous page would hand the same cookie
+# to every visitor; this tells CloudFront to cache the page but not the cookie.
+Header merge Cache-Control "no-cache=\"Set-Cookie\"" "expr=-n resp('Set-Cookie')"
 EOF
 a2enconf cloudfront-origin >/dev/null 2>&1
 apache2ctl configtest && systemctl reload apache2

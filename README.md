@@ -140,10 +140,15 @@ and Lambda are outside one), no secrets rotation for the origin header (rotate w
 ## Operating notes
 
 - **Snapshots**: daily Lightsail auto-snapshots at `lightsail_snapshot_time` UTC, seven retained.
-- **Page cache**: CloudFront caches anonymous page HTML for `page_cache_default_ttl` seconds (300). All
-  cookies form part of the cache key, so anyone carrying a cookie bypasses the cache. Set it to 0 for a
-  membership or WooCommerce site. Static assets under `/wp-content` and `/wp-includes` are cached a day,
-  keyed on the `?ver=` query string.
+- **Page cache**: CloudFront caches anonymous page HTML for `page_cache_default_ttl` seconds (300).
+  Cookies are not in the cache key, so visitors carrying only analytics or consent cookies share cached
+  pages. A CloudFront Function (`modules/edge/functions/wp-cache-key.js`) gives any request carrying a
+  WordPress session cookie (logged in, WooCommerce cart, password-protected post, commenter) a random
+  cache-key header, so those requests always go to the origin and are never shared. The origin marks any
+  response that sets a cookie `Cache-Control: no-cache="Set-Cookie"` so CloudFront never replays one
+  visitor's cookie to another. Static assets under `/wp-content` and `/wp-includes` are cached a day,
+  keyed on the `?ver=` query string. A plugin that keeps per-visitor state in a cookie not on the bypass
+  list needs its prefix added to `BYPASS_PREFIXES` in the function.
 - **Chat logs**: `enable_chat_logs = true` writes question, answer, model, sources and token counts to
   DynamoDB with a 90-day TTL. Off by default.
 - **Re-running the instance bootstrap**: `sudo /usr/local/sbin/site-bootstrap.sh`. It is idempotent.
@@ -162,7 +167,7 @@ modules/edge/                         Route 53, ACM, CloudFront, WAF, widget buc
 modules/kb/                           docs bucket, S3 Vectors, Bedrock KB + data source, kb-sync Lambda
 modules/chatbot/                      Guardrail, chat Lambda (lambda/handler.py), HTTP API, optional DynamoDB
 scripts/                              upload-docs.sh, kb-status.sh, chat.sh
-tests/                                unit tests for the chat handler (python3 -m unittest tests/test_chat_handler.py)
+tests/                                chat handler (python3 -m unittest tests/test_chat_handler.py), cache-key function (node tests/test_wp_cache_key.js)
 ```
 
 ## Verification status
@@ -170,7 +175,10 @@ tests/                                unit tests for the chat handler (python3 -
 - `terraform validate` and `terraform fmt -check`: clean (Terraform 1.16.1, AWS provider 6.x).
 - `terraform plan` against a live account: 60 resources, no errors.
 - Chat handler: 9 unit tests pass (auth header, validation, retrieval + citation, fallback, history hygiene).
-- Instance bootstrap: rendered template passes `bash -n` for both the outer and inner script.
+- Cache-key function: 6 unit tests pass (`node tests/test_wp_cache_key.js`).
+- Instance bootstrap: rendered template passes `bash -n` for both the outer and inner script. The origin-lock
+  `Require expr` and the conditional `no-cache="Set-Cookie"` rule were exercised on a local Apache 2.4
+  (403 without the header, Cache-Control added only when a response sets a cookie).
 - Not yet exercised end to end: a real `apply` (Lightsail blueprint first-boot timing, Let's Encrypt on the
   origin, CloudFront 421 avoidance via `ServerAlias *`). The first apply of this template should be treated
   as a shakedown; `/var/log/site-bootstrap.log` on the instance is where to look.
