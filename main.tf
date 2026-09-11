@@ -20,6 +20,12 @@ resource "random_password" "origin_verify" {
   special = false
 }
 
+# WordPress administrator password, set at first boot by the instance bootstrap.
+resource "random_password" "wp_admin" {
+  length  = 24
+  special = false
+}
+
 ########################################
 # Knowledge base: S3 docs -> Bedrock KB on S3 Vectors
 ########################################
@@ -75,6 +81,11 @@ module "site" {
   origin_hostname      = local.origin_hostname
   letsencrypt_email    = var.letsencrypt_email
   origin_verify_secret = random_password.origin_verify.result
+  wp_admin_user        = var.wp_admin_user
+  wp_admin_email       = coalesce(var.wp_admin_email, var.letsencrypt_email, var.budget_email, "admin@${var.domain_name}")
+  wp_admin_password    = random_password.wp_admin.result
+  business_name        = var.business_name
+  inject_chat_widget   = var.inject_chat_widget
 }
 
 ########################################

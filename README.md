@@ -55,15 +55,30 @@ Prices verified on aws.amazon.com 2026-09-11.
 ## Prerequisites
 
 1. Terraform ≥ 1.9 and AWS CLI with credentials for the target account.
-2. **Bedrock model access**: in the Bedrock console (target region) request access to the
-   Anthropic models you intend to use and to Titan Text Embeddings V2. Anthropic requires a
-   one-time use-case form per account. OpenAI models on Bedrock need no form. Until access is
-   granted, chat returns 502 and the Lambda log shows `AccessDeniedException`.
+2. **Bedrock model access**: serverless models are enabled automatically. Anthropic models need the
+   one-time first-use form per account (see below); OpenAI models on Bedrock need nothing. Until it's done,
+   chat returns 502 and the Lambda log shows `AccessDeniedException`.
 3. A domain you control. Either let the template create the Route 53 zone (then repoint your
    registrar at the output name servers) or pass an existing `route53_zone_id`.
 4. Region must have Lightsail, Bedrock Knowledge Bases, and S3 Vectors. us-east-1, us-east-2,
    us-west-2, eu-central-1, ap-southeast-2 are safe; S3 Vectors is in 31 commercial regions as of
    2026-03.
+
+## Build time and what's still manual
+
+The target is one `terraform apply` and about an hour of elapsed time, after which the site is live with
+the assistant on it and the remaining effort is WordPress work with the client. Three things sit outside
+Terraform:
+
+- **DNS delegation.** If the client's domain is already in Route 53 in the target account, pass its
+  `route53_zone_id` and there is nothing to do. Otherwise the registrar has to point at the new zone's
+  name servers, and the certificate step waits on that.
+- **Anthropic first-use form.** Bedrock enables serverless models automatically, but Anthropic models
+  need a one-time use-case form per AWS account before the first call. Submitted from the management
+  account of an AWS Organization through the API, it covers every member account, so a build account
+  under one org never sees it again.
+- **Knowledge-base documents.** `scripts/upload-docs.sh` loads whatever the client provides; that belongs
+  in the client hours, not the build.
 
 ## Deploy
 
@@ -86,13 +101,17 @@ to get the name servers, repoint, then apply everything).
 2. **Origin certificate** (when `origin_tls = true`): the instance retries Let's Encrypt every 15
    minutes until `origin.<domain>` resolves. Until then the site returns CloudFront 502. Progress is in
    `/var/log/site-bootstrap.log` on the instance; `sudo /usr/local/sbin/site-origin-cert.sh` forces an attempt.
-3. **WordPress admin**: `https://<domain>/wp-admin/`, user `user`, password in `~/application_credentials`
-   on the instance (Lightsail console → Connect using SSH, or `ssh admin@<static ip>` from an admin CIDR;
-   the login user differs by blueprint version, check the Lightsail console). Change the password and
-   username on first login.
-4. **Widget**: paste the `widget_snippet` output into the theme footer (Appearance → Theme File Editor →
-   footer.php, or any header/footer plugin). It is a single `<script>` tag; the widget is same-origin, so
-   no CORS.
+3. **WordPress admin**: `https://<domain>/wp-admin/`, user from `terraform output wp_admin_user`
+   (default `siteadmin`), password from `terraform output -raw wp_admin_password`. The bootstrap creates
+   this account, removes the blueprint's default `user` account, sets the site title to `business_name`,
+   and turns on `/%postname%/` permalinks. If any of that fails, the log says so and the blueprint's own
+   credentials in `~/application_credentials` on the instance still work.
+4. **Chat widget**: nothing to do. The bootstrap installs a must-use plugin
+   (`wp-content/mu-plugins/site-chat-widget.php`) that loads the widget on every public page, whatever
+   theme the client picks. Must-use plugins can't be deactivated from wp-admin, so a theme change or a
+   plugin cleanup can't remove the assistant by accident. To turn it off, add
+   `define('SITE_CHAT_DISABLED', true);` to `wp-config.php`. Title, greeting, color and side come from
+   the `widget` variable; change them and `terraform apply` (about a minute, no WordPress change).
 5. **Knowledge base**: `scripts/upload-docs.sh ./docs` syncs a folder to the docs bucket; ingestion starts
    automatically. `scripts/kb-status.sh` shows recent jobs, `scripts/kb-status.sh --sync` forces one.
    Supported: PDF, DOCX, HTML, Markdown, TXT, CSV, XLSX (Bedrock parses them; max 50 MB per file).
