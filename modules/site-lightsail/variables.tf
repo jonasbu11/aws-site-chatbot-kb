@@ -44,3 +44,24 @@ variable "origin_verify_secret" {
   type      = string
   sensitive = true
 }
+
+variable "wp_admin_user" {
+  type = string
+}
+
+variable "wp_admin_email" {
+  type = string
+}
+
+variable "wp_admin_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "business_name" {
+  type = string
+}
+
+variable "inject_chat_widget" {
+  type = bool
+}

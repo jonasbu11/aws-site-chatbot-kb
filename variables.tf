@@ -97,6 +97,29 @@ variable "letsencrypt_email" {
   default     = null
 }
 
+variable "wp_admin_user" {
+  description = "WordPress administrator username created at first boot (the blueprint's default 'user' account is removed)."
+  type        = string
+  default     = "siteadmin"
+
+  validation {
+    condition     = can(regex("^[a-z0-9_.-]{3,30}$", var.wp_admin_user))
+    error_message = "wp_admin_user must be 3-30 chars: lowercase letters, digits, _ . -"
+  }
+}
+
+variable "wp_admin_email" {
+  description = "WordPress administrator email. Null falls back to letsencrypt_email, then budget_email."
+  type        = string
+  default     = null
+}
+
+variable "inject_chat_widget" {
+  description = "Install a must-use WordPress plugin at first boot that loads the chat widget on every public page. false leaves the widget off; paste widget_snippet by hand instead."
+  type        = bool
+  default     = true
+}
+
 variable "page_cache_default_ttl" {
   description = "Seconds CloudFront caches anonymous WordPress page HTML when the origin sends no Cache-Control. 0 disables page caching (static assets are always cached)."
   type        = number

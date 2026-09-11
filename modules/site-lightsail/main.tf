@@ -5,6 +5,11 @@ locals {
     origin_tls           = var.origin_tls
     letsencrypt_email    = coalesce(var.letsencrypt_email, "admin@${var.domain_name}")
     origin_verify_secret = var.origin_verify_secret
+    wp_admin_user        = var.wp_admin_user
+    wp_admin_email       = var.wp_admin_email
+    wp_admin_password    = var.wp_admin_password
+    business_name        = replace(var.business_name, "/[\"$`\\\\]/", "")
+    inject_chat_widget   = var.inject_chat_widget
   })
 }
 

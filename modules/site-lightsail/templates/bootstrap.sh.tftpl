@@ -4,7 +4,10 @@
 # It installs a background bootstrapper that waits for the blueprint's own
 # WordPress setup to finish, then locks the origin to CloudFront, fixes the
 # site URL, and (optionally) obtains a Let's Encrypt certificate for the
-# origin hostname so CloudFront can talk to it over HTTPS.
+# origin hostname so CloudFront can talk to it over HTTPS. It also sets the
+# WordPress admin account and site title and installs the must-use plugin
+# that puts the AI assistant on every public page, so no manual WordPress
+# step is needed before handing the site over.
 
 exec >> /var/log/site-bootstrap.log 2>&1
 echo "[$(date -Is)] launch script start"
@@ -16,6 +19,11 @@ ORIGIN_HOSTNAME="${origin_hostname}"
 ORIGIN_TLS="${origin_tls}"
 LETSENCRYPT_EMAIL="${letsencrypt_email}"
 ORIGIN_VERIFY_SECRET="${origin_verify_secret}"
+WP_ADMIN_USER="${wp_admin_user}"
+WP_ADMIN_EMAIL="${wp_admin_email}"
+WP_ADMIN_PASSWORD="${wp_admin_password}"
+BUSINESS_NAME="${business_name}"
+INJECT_CHAT_WIDGET="${inject_chat_widget}"
 EOF
 chmod 600 /etc/site-bootstrap/env
 
@@ -91,7 +99,67 @@ PY
   log "wp-config.php updated"
 fi
 
-# 4. Optional: Let's Encrypt certificate for the origin hostname so CloudFront
+# 4. WordPress setup through WP-CLI, run as the web server user: admin
+#    account, site title, pretty permalinks, and the chat widget plugin.
+#    Each step logs and continues on failure; the blueprint's own admin
+#    credentials (~/application_credentials) remain the fallback.
+WP_LOAD=$(find /var/www /opt/bitnami -maxdepth 4 -name wp-load.php 2>/dev/null | head -1)
+if [ -n "$WP_LOAD" ]; then
+  WP_ROOT=$(dirname "$WP_LOAD")
+  WEB_USER=$(stat -c %U "$WP_ROOT/wp-content" 2>/dev/null || echo www-data)
+  WP=$(command -v wp || true)
+  if [ -z "$WP" ]; then
+    curl -fsSL -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+      && chmod 755 /usr/local/bin/wp && WP=/usr/local/bin/wp
+  fi
+  wpcli() { sudo -u "$WEB_USER" env WP_CLI_CACHE_DIR=/tmp/wp-cli-cache "$WP" --path="$WP_ROOT" --skip-plugins --skip-themes "$@"; }
+
+  if [ -n "$WP" ] && wpcli core is-installed; then
+    if wpcli user get "$WP_ADMIN_USER" --field=ID >/dev/null 2>&1; then
+      wpcli user update "$WP_ADMIN_USER" --user_pass="$WP_ADMIN_PASSWORD" --user_email="$WP_ADMIN_EMAIL" --skip-email \
+        && log "admin $WP_ADMIN_USER updated" || log "admin update failed"
+    else
+      NEW_ID=$(wpcli user create "$WP_ADMIN_USER" "$WP_ADMIN_EMAIL" --role=administrator --user_pass="$WP_ADMIN_PASSWORD" --porcelain)
+      if [ -n "$NEW_ID" ]; then
+        log "admin $WP_ADMIN_USER created (id $NEW_ID)"
+        # The blueprint ships an administrator named "user"; retire it.
+        if [ "$WP_ADMIN_USER" != "user" ] && wpcli user get user --field=ID >/dev/null 2>&1; then
+          wpcli user delete user --reassign="$NEW_ID" --yes && log "default 'user' account removed"
+        fi
+      else
+        log "admin create failed; blueprint credentials still apply"
+      fi
+    fi
+    wpcli option update blogname "$BUSINESS_NAME" >/dev/null && log "site title set"
+    wpcli option update admin_email "$WP_ADMIN_EMAIL" >/dev/null
+    wpcli rewrite structure '/%postname%/' --hard >/dev/null && log "permalinks set"
+  else
+    log "WP-CLI unavailable or WordPress not installed; skipped account and title setup"
+  fi
+
+  if [ "$INJECT_CHAT_WIDGET" = "true" ]; then
+    install -d -o "$WEB_USER" -g "$WEB_USER" "$WP_ROOT/wp-content/mu-plugins"
+    cat > "$WP_ROOT/wp-content/mu-plugins/site-chat-widget.php" <<'PHP'
+<?php
+/**
+ * Plugin Name: Site Chat Widget
+ * Description: Loads the AI assistant on every public page. Installed by aws-site-chatbot-kb. To turn it off, add define('SITE_CHAT_DISABLED', true); to wp-config.php.
+ */
+if (defined('SITE_CHAT_DISABLED') && SITE_CHAT_DISABLED) {
+    return;
+}
+add_action('wp_enqueue_scripts', function () {
+    wp_enqueue_script('site-chat-widget', '/chat-widget/widget.js', array(), null, array('strategy' => 'defer', 'in_footer' => true));
+});
+PHP
+    chown "$WEB_USER:$WEB_USER" "$WP_ROOT/wp-content/mu-plugins/site-chat-widget.php"
+    log "chat widget must-use plugin installed"
+  fi
+else
+  log "wp-load.php not found; skipped WordPress setup"
+fi
+
+# 5. Optional: Let's Encrypt certificate for the origin hostname so CloudFront
 #    can use an HTTPS origin. Retried by cron until DNS resolves and the
 #    challenge succeeds (4 attempts/hour stays under Let's Encrypt limits).
 if [ "$ORIGIN_TLS" = "true" ]; then
@@ -136,7 +204,7 @@ EOF2
   /usr/local/sbin/site-origin-cert.sh || log "origin cert not yet issued; cron will retry every 15 min"
 fi
 
-# 5. Unattended security updates.
+# 6. Unattended security updates.
 export DEBIAN_FRONTEND=noninteractive
 apt-get install -y -qq unattended-upgrades >/dev/null 2>&1 && dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
 

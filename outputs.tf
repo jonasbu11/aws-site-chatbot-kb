@@ -6,6 +6,16 @@ output "wp_admin_url" {
   value = "https://${var.domain_name}/wp-admin/"
 }
 
+output "wp_admin_user" {
+  value = var.wp_admin_user
+}
+
+output "wp_admin_password" {
+  description = "Set at first boot. Read with: terraform output -raw wp_admin_password"
+  value       = random_password.wp_admin.result
+  sensitive   = true
+}
+
 output "route53_name_servers" {
   description = "Point your registrar at these when the zone was created by this template."
   value       = module.edge.name_servers
@@ -16,7 +26,7 @@ output "cloudfront_domain_name" {
 }
 
 output "lightsail_static_ip" {
-  description = "Origin IP. Reach SSH from admin_cidrs or the Lightsail console; the WordPress admin password is in ~/application_credentials on the instance."
+  description = "Origin IP. SSH from admin_cidrs or the Lightsail browser console; first-boot log is /var/log/site-bootstrap.log."
   value       = module.site.static_ip
 }
 
@@ -43,7 +53,7 @@ output "chat_api_url" {
 }
 
 output "widget_snippet" {
-  description = "Paste into the WordPress theme footer (Appearance > Theme File Editor, or a header/footer plugin)."
+  description = "Installed automatically as a must-use plugin when inject_chat_widget = true. Only needed by hand for a site built with inject_chat_widget = false or hosted elsewhere."
   value       = "<script src=\"https://${var.domain_name}/chat-widget/widget.js\" defer></script>"
 }
 
