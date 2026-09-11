@@ -8,3 +8,6 @@ backend.tf
 __pycache__/
 *.pyc
 crash.log
+
+# Files the Claude desktop app saves into this folder
+Claude outputs/
