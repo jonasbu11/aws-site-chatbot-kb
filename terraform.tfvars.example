@@ -1,0 +1,44 @@
+# Copy to terraform.tfvars and edit. Every value below is the minimum for one site.
+
+name          = "acme"            # resource prefix, 3-24 chars
+region        = "us-east-1"       # needs Bedrock + S3 Vectors + Lightsail
+aws_profile   = null              # or a named CLI profile
+domain_name   = "example.com"
+business_name = "Acme Plumbing"
+
+# DNS: null creates a hosted zone (then point the registrar at route53_name_servers).
+route53_zone_id = null
+
+# Who may reach /wp-admin, /wp-login.php and SSH. Empty = open (rate-limited only).
+admin_cidrs = ["203.0.113.10/32"]
+
+# Origin TLS (CloudFront -> Lightsail over HTTPS via Let's Encrypt on origin.<domain>).
+origin_tls        = true
+letsencrypt_email = "you@example.com"
+
+# Budget alert
+budget_monthly_usd = 50
+budget_email       = "you@example.com"
+
+# Models. Verified on Bedrock 2026-09-11; confirm in your region with
+#   aws bedrock list-inference-profiles --query "inferenceProfileSummaries[].inferenceProfileId"
+# Top tier:     global.anthropic.claude-fable-5-1 | global.anthropic.claude-opus-5 | us.openai.gpt-5.6-terra
+# Second tier:  global.anthropic.claude-sonnet-5  | openai.gpt-oss-120b-1:0
+# Budget:       global.anthropic.claude-haiku-4-5-20251001-v1:0
+chat_model_primary  = "global.anthropic.claude-sonnet-5"
+chat_model_fallback = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+widget = {
+  title         = "Ask Acme"
+  greeting      = "Hi! Ask me about our services, hours, or pricing."
+  primary_color = "#1f4e79"
+  position      = "right"
+}
+
+# Optional knobs (defaults shown)
+# lightsail_bundle_id    = "micro_3_0"   # $7/mo, 1 GB
+# enable_waf             = true
+# enable_guardrail       = true
+# enable_chat_logs       = false
+# page_cache_default_ttl = 300
+# embedding_dimensions   = 1024

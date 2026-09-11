@@ -1,0 +1,144 @@
+#!/bin/bash
+# First-boot launch script for the Lightsail WordPress instance.
+# Rendered by Terraform (templatefile); runs once as root at instance creation.
+# It installs a background bootstrapper that waits for the blueprint's own
+# WordPress setup to finish, then locks the origin to CloudFront, fixes the
+# site URL, and (optionally) obtains a Let's Encrypt certificate for the
+# origin hostname so CloudFront can talk to it over HTTPS.
+
+exec >> /var/log/site-bootstrap.log 2>&1
+echo "[$(date -Is)] launch script start"
+
+install -d -m 700 /etc/site-bootstrap
+cat > /etc/site-bootstrap/env <<'EOF'
+DOMAIN_NAME="${domain_name}"
+ORIGIN_HOSTNAME="${origin_hostname}"
+ORIGIN_TLS="${origin_tls}"
+LETSENCRYPT_EMAIL="${letsencrypt_email}"
+ORIGIN_VERIFY_SECRET="${origin_verify_secret}"
+EOF
+chmod 600 /etc/site-bootstrap/env
+
+cat > /usr/local/sbin/site-bootstrap.sh <<'EOS'
+#!/bin/bash
+set -u
+. /etc/site-bootstrap/env
+log() { echo "[$(date -Is)] $*"; }
+
+# 1. Wait for the blueprint to finish installing WordPress.
+WP_CONFIG=""
+for i in $(seq 1 360); do
+  for c in /var/www/wp-config.php /var/www/html/wp-config.php; do
+    [ -f "$c" ] && WP_CONFIG="$c" && break
+  done
+  [ -n "$WP_CONFIG" ] && systemctl is-active --quiet apache2 && break
+  sleep 10
+done
+if [ -z "$WP_CONFIG" ]; then
+  log "wp-config.php not found after 60 minutes; giving up"
+  exit 1
+fi
+sleep 60  # let the blueprint's own first-boot hooks settle
+log "found $WP_CONFIG"
+
+DOCROOT=$(grep -rhoE '^\s*DocumentRoot\s+\S+' /etc/apache2/sites-enabled/ 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+DOCROOT=$${DOCROOT:-/var/www/html}
+log "document root: $DOCROOT"
+
+# 2. Apache: trust CloudFront's X-Forwarded-For and refuse requests that do
+#    not carry the origin-verify header. Let's Encrypt challenges are exempt.
+a2enmod remoteip headers ssl rewrite >/dev/null 2>&1 || true
+cat > /etc/apache2/conf-available/cloudfront-origin.conf <<EOF
+# Managed by aws-site-chatbot-kb. Only CloudFront may reach this origin.
+RemoteIPHeader X-Forwarded-For
+<Location "/">
+    Require expr "%%{HTTP:X-Origin-Verify} == '$ORIGIN_VERIFY_SECRET'"
+</Location>
+<Location "/.well-known/acme-challenge/">
+    Require all granted
+</Location>
+EOF
+a2enconf cloudfront-origin >/dev/null 2>&1
+apache2ctl configtest && systemctl reload apache2
+log "apache origin lock applied"
+
+# 3. WordPress: canonical HTTPS URL and TLS detection behind CloudFront.
+if ! grep -q "aws-site-chatbot-kb" "$WP_CONFIG"; then
+  cp "$WP_CONFIG" "$WP_CONFIG.bak-bootstrap"
+  python3 - "$WP_CONFIG" "$DOMAIN_NAME" <<'PY'
+import sys, io
+path, domain = sys.argv[1], sys.argv[2]
+src = io.open(path, encoding="utf-8").read()
+block = (
+    "/* aws-site-chatbot-kb: site is served through CloudFront */\n"
+    "if (isset($_SERVER['HTTP_X_ORIGIN_VERIFY'])) { $_SERVER['HTTPS'] = 'on'; }\n"
+    "if (!defined('WP_HOME')) define('WP_HOME', 'https://%s');\n"
+    "if (!defined('WP_SITEURL')) define('WP_SITEURL', 'https://%s');\n"
+    "if (!defined('FORCE_SSL_ADMIN')) define('FORCE_SSL_ADMIN', true);\n"
+    "if (!defined('DISALLOW_FILE_EDIT')) define('DISALLOW_FILE_EDIT', true);\n"
+) % (domain, domain)
+idx = src.find("<?php")
+idx = idx + len("<?php") if idx >= 0 else 0
+# skip to end of that line
+nl = src.find("\n", idx)
+idx = nl + 1 if nl >= 0 else len(src)
+io.open(path, "w", encoding="utf-8").write(src[:idx] + block + src[idx:])
+PY
+  log "wp-config.php updated"
+fi
+
+# 4. Optional: Let's Encrypt certificate for the origin hostname so CloudFront
+#    can use an HTTPS origin. Retried by cron until DNS resolves and the
+#    challenge succeeds (4 attempts/hour stays under Let's Encrypt limits).
+if [ "$ORIGIN_TLS" = "true" ]; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq && apt-get install -y -qq certbot >/dev/null 2>&1 || log "certbot install failed (will retry via cron)"
+  cat > /usr/local/sbin/site-origin-cert.sh <<EOF2
+#!/bin/bash
+. /etc/site-bootstrap/env
+LIVE=/etc/letsencrypt/live/\$ORIGIN_HOSTNAME/fullchain.pem
+if [ -f "\$LIVE" ]; then exit 0; fi
+command -v certbot >/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot >/dev/null 2>&1; }
+certbot certonly --webroot -w "$DOCROOT" -d "\$ORIGIN_HOSTNAME" \\
+  --non-interactive --agree-tos -m "\$LETSENCRYPT_EMAIL" --keep-until-expiring >> /var/log/site-bootstrap.log 2>&1 || exit 1
+cat > /etc/apache2/sites-available/origin-ssl.conf <<EOV
+<VirtualHost *:443>
+    # CloudFront presents SNI=origin hostname but forwards the visitor's Host
+    # header (WordPress needs it). ServerAlias * keeps both on this vhost so
+    # Apache never answers 421 Misdirected Request.
+    ServerName \$ORIGIN_HOSTNAME
+    ServerAlias *
+    DocumentRoot $DOCROOT
+    SSLEngine on
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+    SSLCertificateFile /etc/letsencrypt/live/\$ORIGIN_HOSTNAME/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/\$ORIGIN_HOSTNAME/privkey.pem
+    <Directory $DOCROOT>
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+EOV
+a2ensite origin-ssl >/dev/null 2>&1
+install -d /etc/letsencrypt/renewal-hooks/deploy
+printf '#!/bin/bash\nsystemctl reload apache2\n' > /etc/letsencrypt/renewal-hooks/deploy/reload-apache.sh
+chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-apache.sh
+apache2ctl configtest && systemctl reload apache2
+echo "[\$(date -Is)] origin TLS enabled for \$ORIGIN_HOSTNAME" >> /var/log/site-bootstrap.log
+rm -f /etc/cron.d/site-origin-cert
+EOF2
+  chmod 700 /usr/local/sbin/site-origin-cert.sh
+  echo "*/15 * * * * root /usr/local/sbin/site-origin-cert.sh" > /etc/cron.d/site-origin-cert
+  /usr/local/sbin/site-origin-cert.sh || log "origin cert not yet issued; cron will retry every 15 min"
+fi
+
+# 5. Unattended security updates.
+export DEBIAN_FRONTEND=noninteractive
+apt-get install -y -qq unattended-upgrades >/dev/null 2>&1 && dpkg-reconfigure -f noninteractive unattended-upgrades >/dev/null 2>&1 || true
+
+touch /etc/site-bootstrap/done
+log "bootstrap complete"
+EOS
+chmod 700 /usr/local/sbin/site-bootstrap.sh
+nohup /usr/local/sbin/site-bootstrap.sh >> /var/log/site-bootstrap.log 2>&1 &
+echo "[$(date -Is)] launch script handed off to background bootstrapper"

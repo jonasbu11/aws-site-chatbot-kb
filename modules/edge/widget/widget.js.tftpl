@@ -1,0 +1,136 @@
+/* Chat widget for ${business_name}. Rendered by Terraform; served from /chat-widget/widget.js.
+   Include with: <script src="/chat-widget/widget.js" defer></script> */
+(function () {
+  'use strict';
+  if (window.__siteChatLoaded) return;
+  window.__siteChatLoaded = true;
+
+  var API = '${api_path}';
+  var TITLE = ${jsonencode(title)};
+  var GREETING = ${jsonencode(greeting)};
+  var COLOR = ${jsonencode(primary_color)};
+  var SIDE = ${jsonencode(position)} === 'left' ? 'left' : 'right';
+  var MAX_HISTORY = 8;
+
+  var history = [];
+  var sessionId = null;
+  try {
+    sessionId = sessionStorage.getItem('siteChatSession');
+    if (!sessionId) {
+      sessionId = 'ws' + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+      sessionStorage.setItem('siteChatSession', sessionId);
+    }
+  } catch (e) { sessionId = null; }
+
+  var css = ''
+    + '.sc-launch{position:fixed;bottom:20px;' + SIDE + ':20px;z-index:2147483000;width:56px;height:56px;border-radius:50%;border:0;'
+    + 'background:' + COLOR + ';color:#fff;font-size:26px;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,.25)}'
+    + '.sc-panel{position:fixed;bottom:88px;' + SIDE + ':20px;z-index:2147483000;width:360px;max-width:calc(100vw - 40px);height:520px;max-height:calc(100vh - 120px);'
+    + 'display:none;flex-direction:column;background:#fff;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.28);overflow:hidden;font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1a1a1a}'
+    + '.sc-panel.open{display:flex}'
+    + '.sc-head{background:' + COLOR + ';color:#fff;padding:12px 16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}'
+    + '.sc-head button{background:none;border:0;color:#fff;font-size:20px;cursor:pointer}'
+    + '.sc-log{flex:1;overflow-y:auto;padding:12px;background:#f6f7f9}'
+    + '.sc-msg{margin:6px 0;padding:9px 12px;border-radius:12px;max-width:85%;white-space:pre-wrap;word-wrap:break-word}'
+    + '.sc-user{background:' + COLOR + ';color:#fff;margin-' + (SIDE === 'left' ? 'right' : 'left') + ':auto;border-bottom-' + SIDE + '-radius:4px}'
+    + '.sc-bot{background:#fff;border:1px solid #e3e5e8;border-bottom-' + (SIDE === 'left' ? 'right' : 'left') + '-radius:4px}'
+    + '.sc-src{font-size:12px;color:#555;margin:2px 0 8px 4px}'
+    + '.sc-form{display:flex;border-top:1px solid #e3e5e8;background:#fff}'
+    + '.sc-form input{flex:1;border:0;padding:12px 14px;font:inherit;outline:none}'
+    + '.sc-form button{border:0;background:' + COLOR + ';color:#fff;padding:0 18px;font:inherit;cursor:pointer}'
+    + '.sc-form button:disabled{opacity:.6;cursor:default}'
+    + '.sc-typing{opacity:.6;font-style:italic}';
+  var style = document.createElement('style');
+  style.textContent = css;
+  document.head.appendChild(style);
+
+  var launch = document.createElement('button');
+  launch.className = 'sc-launch';
+  launch.setAttribute('aria-label', 'Open chat');
+  launch.textContent = '💬';
+
+  var panel = document.createElement('div');
+  panel.className = 'sc-panel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-label', TITLE);
+  panel.innerHTML = ''
+    + '<div class="sc-head"><span></span><button type="button" aria-label="Close">×</button></div>'
+    + '<div class="sc-log" aria-live="polite"></div>'
+    + '<form class="sc-form"><input type="text" maxlength="2000" placeholder="Type your question…" autocomplete="off" required><button type="submit">Send</button></form>';
+  panel.querySelector('.sc-head span').textContent = TITLE;
+
+  document.body.appendChild(launch);
+  document.body.appendChild(panel);
+
+  var log = panel.querySelector('.sc-log');
+  var form = panel.querySelector('form');
+  var input = form.querySelector('input');
+  var send = form.querySelector('button');
+
+  function add(role, text) {
+    var el = document.createElement('div');
+    el.className = 'sc-msg ' + (role === 'user' ? 'sc-user' : 'sc-bot');
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function addSources(sources) {
+    if (!sources || !sources.length) return;
+    var el = document.createElement('div');
+    el.className = 'sc-src';
+    el.textContent = 'Sources: ' + sources.map(function (s) { return '[' + s.n + '] ' + s.title; }).join(', ');
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  add('assistant', GREETING);
+
+  function toggle(open) {
+    panel.classList.toggle('open', open);
+    if (open) input.focus();
+  }
+  launch.addEventListener('click', function () { toggle(!panel.classList.contains('open')); });
+  panel.querySelector('.sc-head button').addEventListener('click', function () { toggle(false); });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    var q = input.value.trim();
+    if (!q) return;
+    input.value = '';
+    add('user', q);
+    var typing = add('assistant', 'Thinking…');
+    typing.classList.add('sc-typing');
+    send.disabled = true;
+
+    var body = { message: q, history: history.slice(-MAX_HISTORY * 2) };
+    if (sessionId) body.session_id = sessionId;
+
+    fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'omit'
+    }).then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, status: r.status, data: data }; });
+    }).then(function (res) {
+      typing.remove();
+      if (!res.ok) {
+        add('assistant', (res.data && res.data.error) || 'Sorry, something went wrong. Please try again.');
+        return;
+      }
+      add('assistant', res.data.answer || '');
+      addSources(res.data.sources);
+      history.push({ role: 'user', content: q });
+      history.push({ role: 'assistant', content: res.data.answer || '' });
+      if (history.length > MAX_HISTORY * 2) history = history.slice(-MAX_HISTORY * 2);
+    }).catch(function () {
+      typing.remove();
+      add('assistant', 'Sorry, I could not reach the assistant. Please try again.');
+    }).then(function () {
+      send.disabled = false;
+      input.focus();
+    });
+  });
+})();

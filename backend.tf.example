@@ -1,0 +1,18 @@
+# Copy to backend.tf and fill in, then `terraform init -migrate-state`.
+# Create the bucket once per AWS account (versioning on, public access blocked):
+#   aws s3api create-bucket --bucket <state-bucket> --region us-east-1
+#   aws s3api put-bucket-versioning --bucket <state-bucket> --versioning-configuration Status=Enabled
+#   aws s3api put-public-access-block --bucket <state-bucket> \
+#     --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+#
+# One state bucket can hold every site this template deploys; change `key` per site.
+
+terraform {
+  backend "s3" {
+    bucket       = "<state-bucket>"
+    key          = "sites/<site-name>/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true # S3-native locking, no DynamoDB table needed (Terraform >= 1.10)
+  }
+}
